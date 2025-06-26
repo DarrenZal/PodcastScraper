@@ -20,8 +20,8 @@ A powerful, configurable web scraper for extracting podcast episodes and transcr
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
-cd podcastScraper
+git clone https://github.com/DarrenZal/PodcastScraper.git
+cd PodcastScraper
 
 # Create and activate virtual environment
 python3 -m venv venv
@@ -238,11 +238,18 @@ Based on our transcript investigation findings:
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Add your podcast configuration to `examples/`
+1. Fork the repository on [GitHub](https://github.com/DarrenZal/PodcastScraper)
+2. Create a feature branch (`git checkout -b feature/new-podcast`)
+3. Add your podcast configuration to `examples/` or `scripts/config/`
 4. Test with your podcast
-5. Submit a pull request
+5. Commit your changes (`git commit -am 'Add support for XYZ podcast'`)
+6. Push to the branch (`git push origin feature/new-podcast`)
+7. Submit a pull request
+
+### Reporting Issues
+
+- **Bug reports**: Use the [bug report template](https://github.com/DarrenZal/PodcastScraper/issues/new?template=bug_report.md)
+- **New podcast support**: Use the [podcast configuration template](https://github.com/DarrenZal/PodcastScraper/issues/new?template=podcast_configuration.md)
 
 ## License
 
