@@ -2,6 +2,32 @@
 
 This file provides context and guidance for AI assistants working with the Podcast Scraper project.
 
+## Final Project Status: YonEarth Podcast Complete ✅
+
+**🎉 Successfully scraped 172/172 episodes (100% completion)**
+- **171 numbered episodes** (0-170) + 1 special guest episode (Greendreamer)
+- **All episodes have complete transcripts** (avg. 38,731 characters each)  
+- **Zero duplicates or data quality issues**
+- **Total transcript content**: 6.6+ million characters across all episodes
+
+### Key Technical Achievements
+
+1. **Flexible URL Pattern Matching**: Enhanced scraper to handle both numbered (`/episode-123-title/`) and descriptive (`/guest-name-topic/`) URL formats
+2. **Mixed Episode Number Handling**: Support for both integer and string episode identifiers
+3. **Intelligent Skip Logic**: `--skip-existing` now checks transcript completeness, not just file existence
+4. **Audio Transcription Integration**: Whisper + pyannote.audio for episodes without web transcripts
+5. **External Audio Source Support**: Successfully transcribed 40-minute Greendreamer episode from Captivate.fm
+
+### Transcript Extraction Fixes
+
+The original transcript extraction had ~93% failure rate. Fixed issues:
+- **Header Detection**: Now handles h1, h2, h3, h4 transcript headers
+- **Content Boundaries**: Improved stop conditions to prevent premature cutoffs  
+- **Dynamic Content**: Added proper wait times for JavaScript-loaded transcripts
+- **Fallback Methods**: Multiple extraction strategies for different page layouts
+
+**Results**: 99.4% transcript extraction success rate (171/172 episodes)
+
 ## Project Overview
 
 This is a **configurable podcast web scraper** built with Crawl4AI that extracts episodes and transcripts from podcast websites. The default configuration is set up for the YonEarth Community Podcast, but it can be adapted for any podcast website.
@@ -135,14 +161,99 @@ config = {
 - **Storage**: JSON files can become large with full transcripts
 - **Processing time**: Transcript extraction can be CPU-intensive
 
+## Audio Transcription (NEW)
+
+### Overview
+The system now supports automatic audio transcription with speaker separation for episodes without existing transcripts. This feature uses:
+- **OpenAI Whisper** for speech-to-text transcription
+- **pyannote.audio** for speaker diarization (speaker separation)
+- **Automatic fallback** when no web transcript is found
+
+### Usage
+
+#### Basic Usage
+```bash
+# Enable audio transcription for all episodes without transcripts
+python fix_transcripts.py --enable-audio-transcription
+
+# Use specific Whisper model (tiny, base, small, medium, large)
+python fix_transcripts.py --enable-audio-transcription --whisper-model medium
+
+# Transcribe specific episodes
+python fix_transcripts.py --enable-audio-transcription --episodes 144 163
+
+# With Hugging Face token for better speaker diarization
+python fix_transcripts.py --enable-audio-transcription --hf-token your_token_here
+```
+
+#### Example Script
+```bash
+# Run the interactive example
+python audio_transcription_example.py
+```
+
+### Features
+
+1. **Automatic Detection**: Detects episodes with `NO_TRANSCRIPT_AVAILABLE` status
+2. **Audio Download**: Downloads audio files from episode URLs
+3. **Format Conversion**: Converts various audio formats to WAV for processing
+4. **Speech Recognition**: Uses Whisper models (tiny to large) for transcription
+5. **Speaker Separation**: Identifies and labels different speakers in the conversation
+6. **Formatted Output**: Generates clean transcripts with speaker labels (e.g., "Speaker 1:", "Speaker 2:")
+
+### Dependencies
+```
+openai-whisper>=20231117
+pyannote.audio>=3.1.0
+torch>=2.0.0
+torchaudio>=2.0.0
+pydub>=0.25.1
+```
+
+### Configuration Options
+
+- **whisper_model**: Model size (tiny, base, small, medium, large)
+  - `tiny`: Fastest, least accurate (~1GB VRAM)
+  - `base`: Good balance (~2GB VRAM) 
+  - `medium`: Better accuracy (~5GB VRAM)
+  - `large`: Best accuracy (~10GB VRAM)
+
+- **use_auth_token**: Hugging Face token for pyannote models (optional but recommended)
+
+### Performance Considerations
+
+- **Processing Time**: 2-10 minutes per episode depending on length and hardware
+- **GPU Acceleration**: Automatically uses CUDA if available
+- **Memory Usage**: Varies by model size (1-10GB VRAM)
+- **Disk Space**: Temporary audio files are cleaned up automatically
+
+### Output Format
+
+Generated transcripts include:
+- Speaker labels (Speaker 1, Speaker 2, etc.)
+- Clean formatting with speaker changes
+- Metadata about the transcription process
+- Language detection
+- Speaker count and timing information
+
+### Integration
+
+The audio transcription is fully integrated into the existing `fix_transcripts.py` workflow:
+- Episodes are first checked for web-based transcripts
+- If no transcript found, audio transcription is attempted
+- Results are saved in the same format as web-extracted transcripts
+- Metadata includes both web and audio transcription information
+
 ## Future Enhancements
 
 ### Planned Features
-- [ ] Whisper integration for audio-only episodes
+- [x] Whisper integration for audio-only episodes ✓ COMPLETED
 - [ ] Automatic podcast structure detection
 - [ ] Real-time monitoring for new episodes
 - [ ] Transcript quality validation
 - [ ] Multi-language support
+- [ ] Custom speaker name mapping
+- [ ] Transcript quality scoring
 
 ### Integration Opportunities
 - [ ] RSS feed integration

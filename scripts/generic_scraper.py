@@ -210,6 +210,15 @@ class PodcastScraper:
         headers = transcript_config.get('headers', ['h1', 'h2', 'h3', 'h4'])
         keywords = transcript_config.get('transcript_keywords', ['Transcript'])
         
+        # Debug: Check for any text containing "transcript" (case insensitive)
+        all_text_with_transcript = soup.find_all(string=lambda text: text and 'transcript' in text.lower())
+        if all_text_with_transcript:
+            print(f"Episode {episode_num}: Found {len(all_text_with_transcript)} text elements containing 'transcript':")
+            for i, text_elem in enumerate(all_text_with_transcript[:5]):  # Show first 5
+                print(f"  {i+1}: '{text_elem.strip()[:100]}...'")
+        else:
+            print(f"Episode {episode_num}: No text elements found containing 'transcript'")
+        
         for level in headers:
             for keyword in keywords:
                 transcript_header = soup.find(level, string=lambda text: text and keyword in text)
@@ -218,6 +227,26 @@ class PodcastScraper:
                     break
             if transcript_header:
                 break
+        
+        # Method 1.5: Look for non-header elements containing just "Transcript:" or similar
+        if not transcript_header:
+            # Look for any element containing "Transcript:" (including <p>, <div>, etc.)
+            for text_elem in all_text_with_transcript:
+                stripped_text = text_elem.strip()
+                # Check if it's likely a transcript label
+                if (stripped_text.lower() in ['transcript:', 'transcript', 'full transcript:', 'full transcript'] or
+                    (len(stripped_text) < 20 and 'transcript' in stripped_text.lower() and ':' in stripped_text)):
+                    
+                    # Find the parent element
+                    parent = text_elem.parent
+                    if parent:
+                        print(f"Episode {episode_num}: Found transcript label in {parent.name}: '{stripped_text}'")
+                        # Check if content follows this element
+                        next_elem = parent.find_next_sibling()
+                        if next_elem and next_elem.name == 'p':
+                            transcript_header = parent
+                            print(f"Episode {episode_num}: Using {parent.name} element as transcript start")
+                            break
         
         if transcript_header:
             # Extract content after the header
@@ -325,9 +354,14 @@ class PodcastScraper:
             # Extract episode number from URL
             episode_match = re.search(self.config['episode_url_pattern'], url)
             if episode_match:
-                episode_num_match = re.search(r'(\d+)', episode_match.group())
+                # First try to find a number in the URL (for episode-123 format)
+                episode_num_match = re.search(r'episode-(\d+)', url)
                 if episode_num_match:
                     episode_data['episode_number'] = int(episode_num_match.group(1))
+                else:
+                    # For descriptive URLs, use the slug as episode identifier
+                    slug = url.split('/podcast/')[-1].rstrip('/')
+                    episode_data['episode_number'] = slug
             
             # Extract title
             title_tag = soup.find('h1')

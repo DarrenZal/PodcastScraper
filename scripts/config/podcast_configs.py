@@ -13,9 +13,9 @@ def get_yonearth_config() -> Dict[str, Any]:
     return {
         "base_url": "https://yonearth.org",
         "podcast_list_url": "https://yonearth.org/community-podcast/",
-        "episode_url_pattern": r'/podcast/episode-\d+',
+        "episode_url_pattern": r'/podcast/[^/]+/?$',  # Updated to handle both numbered and descriptive URLs
         "episode_link_selector": 'a.tve-dynamic-link',
-        "episode_link_fallback_selector": 'a[href*="/podcast/episode-"]',
+        "episode_link_fallback_selector": 'a[href*="/podcast/"]',
         "pagination_pages": 10,
         "pagination_selector": '.tcb-pagination-number a',
         "podcast_name": "YonEarth Community Podcast",

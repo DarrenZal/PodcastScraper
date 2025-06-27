@@ -11,19 +11,35 @@ from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 import pandas as pd
 from bs4 import BeautifulSoup
 
+from generic_scraper import PodcastScraper
+from audio_transcriber import AudioTranscriber
+
 
 class YonEarthPodcastScraper:
-    def __init__(self):
+    def __init__(self, enable_audio_transcription=False, whisper_model="base", hf_token=None, skip_existing=False):
         self.base_url = "https://yonearth.org"
         self.podcast_list_url = "https://yonearth.org/community-podcast/"
         self.data_dir = Path(__file__).parent.parent / "data"
         self.episode_urls = []
+        self.skip_existing = skip_existing
         
         # Create necessary directories
         self.data_dir.mkdir(exist_ok=True)
         (self.data_dir / "json").mkdir(exist_ok=True)
         (self.data_dir / "markdown").mkdir(exist_ok=True)
         (self.data_dir / "csv").mkdir(exist_ok=True)
+        
+        # Initialize improved transcript extraction
+        self.generic_scraper = PodcastScraper()
+        
+        # Audio transcription setup
+        self.enable_audio_transcription = enable_audio_transcription
+        self.audio_transcriber = None
+        if enable_audio_transcription:
+            self.audio_transcriber = AudioTranscriber(
+                whisper_model=whisper_model,
+                use_auth_token=hf_token
+            )
         
     async def discover_episode_urls(self) -> List[str]:
         """Discover all episode URLs from the main podcast page and pagination"""
@@ -40,9 +56,26 @@ class YonEarthPodcastScraper:
             await self._scrape_page_with_js(crawler, self.podcast_list_url, 1)
             
             # Use JavaScript to navigate through pagination
-            # Based on analysis, we need to check multiple pages to get all episodes
-            for page_num in range(2, 10):  # Check pages 2-9 to be thorough
+            # Stop when we find no new episodes (intelligent pagination)
+            max_pages = 50  # Safety limit
+            consecutive_empty_pages = 0
+            max_empty_pages = 2  # Stop after 2 consecutive empty pages
+            
+            for page_num in range(2, max_pages + 1):
+                episodes_before = len(self.episode_urls)
                 await self._scrape_page_with_js(crawler, self.podcast_list_url, page_num)
+                episodes_after = len(self.episode_urls)
+                
+                # Check if we found new episodes
+                if episodes_after == episodes_before:
+                    consecutive_empty_pages += 1
+                    print(f"  No new episodes found on page {page_num} ({consecutive_empty_pages}/{max_empty_pages} empty pages)")
+                    
+                    if consecutive_empty_pages >= max_empty_pages:
+                        print(f"  Stopping pagination after {consecutive_empty_pages} consecutive empty pages")
+                        break
+                else:
+                    consecutive_empty_pages = 0  # Reset counter when we find episodes
                 
         print(f"Found {len(self.episode_urls)} total unique episode URLs")
         
@@ -121,13 +154,13 @@ class YonEarthPodcastScraper:
             
             # Find all episode links using the actual site structure
             episode_links = soup.find_all('a', {
-                'href': re.compile(r'/podcast/episode-\d+'),
+                'href': re.compile(r'/podcast/[^/]+/?$'),
                 'class': 'tve-dynamic-link'
             })
             
             # Fallback to any episode links if the main selector doesn't work
             if not episode_links:
-                episode_links = soup.find_all('a', href=re.compile(r'/podcast/episode-\d+'))
+                episode_links = soup.find_all('a', href=re.compile(r'/podcast/[^/]+/?$'))
             
             page_urls = []
             for link in episode_links:
@@ -202,9 +235,14 @@ class YonEarthPodcastScraper:
                 
                 # Extract episode number from URL if not found in title
                 if not episode_data.get('episode_number'):
+                    # First try the standard episode-number format
                     match = re.search(r'episode-(\d+)', url)
                     if match:
                         episode_data['episode_number'] = int(match.group(1))
+                    else:
+                        # For URLs without explicit numbers, extract from slug
+                        slug = url.split('/podcast/')[-1].rstrip('/')
+                        episode_data['episode_number'] = slug
                 
                 # Extract detailed content using BeautifulSoup for better parsing
                 soup = BeautifulSoup(result.html, 'html.parser')
@@ -345,67 +383,29 @@ class YonEarthPodcastScraper:
                     if sponsors_p:
                         episode_data['sponsors'] = sponsors_p.get_text(strip=True)
                 
-                # Extract full transcript with enhanced fallback logic
-                episode_data['full_transcript'] = ''
+                # Extract full transcript using improved logic from generic_scraper
+                episode_num = episode_data.get('episode_number', 0)
+                episode_data['full_transcript'] = self.generic_scraper.extract_transcript_from_soup(soup, episode_num)
                 
-                # Method 1: Standard transcript header with wp-block-heading class
-                transcript_header = soup.find('h2', class_='wp-block-heading', string=lambda text: text and 'Transcript' in text)
-                
-                # Method 2: Fallback - any h2 with 'Transcript' in text
-                if not transcript_header:
-                    transcript_header = soup.find('h2', string=lambda text: text and 'Transcript' in text)
-                
-                # Method 3: Look for h3 transcript headers
-                if not transcript_header:
-                    transcript_header = soup.find('h3', string=lambda text: text and 'Transcript' in text)
-                
-                if transcript_header:
-                    transcript_paras = []
-                    current = transcript_header.find_next_sibling()
+                # Try audio transcription if enabled and no web transcript found
+                if (not episode_data['full_transcript'] or len(episode_data['full_transcript']) < 100) and \
+                   self.enable_audio_transcription and self.audio_transcriber and episode_data.get('audio_url'):
                     
-                    # Extract all paragraphs after transcript header until next heading
-                    while current:
-                        if current.name == 'p' and current.get_text(strip=True):
-                            text = current.get_text(strip=True)
-                            # Filter out navigation/UI text that might be mixed in
-                            if (len(text) > 10 and 
-                                'cart' not in text.lower() and 
-                                'comments' not in text.lower() and
-                                'related episodes' not in text.lower()):
-                                transcript_paras.append(text)
-                        elif current.name in ['h2', 'h3', 'h4'] and current.get_text(strip=True):
-                            # Stop at next heading
-                            break
-                        elif current.name == 'div' and current.get_text(strip=True):
-                            # Sometimes transcript content is in div blocks
-                            text = current.get_text(strip=True)
-                            if len(text) > 50:  # Substantial content
-                                transcript_paras.append(text)
-                        current = current.find_next_sibling()
-                    
-                    if transcript_paras:
-                        episode_data['full_transcript'] = '\n\n'.join(transcript_paras)
-                
-                # Method 4: Alternative transcript extraction - look for content with speaker patterns
-                if not episode_data['full_transcript']:
-                    # Look for paragraphs that contain common transcript patterns
-                    all_paras = soup.find_all('p')
-                    transcript_candidates = []
-                    
-                    for p in all_paras:
-                        text = p.get_text(strip=True)
-                        # Check for transcript-like patterns (timestamps, speaker names, etc.)
-                        if (text and len(text) > 50 and
-                            (re.search(r'\d{1,2}:\d{2}', text) or  # Timestamps like 12:34
-                             re.search(r'[A-Z][a-z]+ [A-Z][a-z]+:', text) or  # Speaker names like "John Smith:"
-                             re.search(r'[A-Z]{2,}:', text) or  # Abbreviated names like "JS:"
-                             'Aaron William Perry:' in text or  # Host name
-                             text.count(':') >= 2)):  # Multiple colons suggesting dialogue
-                            transcript_candidates.append(text)
-                    
-                    # If we found transcript-like content, use it
-                    if len(transcript_candidates) >= 5:  # Need substantial content
-                        episode_data['full_transcript'] = '\n\n'.join(transcript_candidates)
+                    print(f"  No web transcript found for episode {episode_num}, attempting audio transcription...")
+                    try:
+                        audio_result = await self.audio_transcriber.transcribe_from_url(
+                            episode_data['audio_url'], 
+                            episode_num
+                        )
+                        
+                        if audio_result['success']:
+                            episode_data['full_transcript'] = audio_result['transcript']
+                            episode_data['audio_transcription_metadata'] = audio_result['metadata']
+                            print(f"  ✓ Audio transcription successful: {len(audio_result['transcript'])} characters")
+                        else:
+                            print(f"  ✗ Audio transcription failed: {audio_result['error']}")
+                    except Exception as e:
+                        print(f"  ✗ Audio transcription error: {e}")
                 
                 # Extract related episodes
                 resources_header = soup.find('h2', class_='wp-block-heading', string=lambda text: text and 'Resources' in text)
@@ -445,6 +445,21 @@ class YonEarthPodcastScraper:
             await self.discover_episode_urls()
         
         urls_to_scrape = self.episode_urls[:limit] if limit else self.episode_urls
+        
+        # Filter out existing episodes if skip_existing is enabled
+        if self.skip_existing:
+            filtered_urls = []
+            skipped_count = 0
+            for url in urls_to_scrape:
+                if not self._episode_files_exist(url):
+                    filtered_urls.append(url)
+                else:
+                    skipped_count += 1
+            
+            urls_to_scrape = filtered_urls
+            if skipped_count > 0:
+                print(f"Skipping {skipped_count} existing episodes")
+        
         print(f"Scraping {len(urls_to_scrape)} episodes...")
         
         # Process in batches to avoid overwhelming the server
@@ -472,6 +487,36 @@ class YonEarthPodcastScraper:
         # Save summary
         await self.save_summary(all_episodes)
         print(f"Scraping complete! Scraped {len(all_episodes)} episodes.")
+    
+    def _episode_files_exist(self, url: str) -> bool:
+        """Check if episode files already exist and have complete content"""
+        # Extract episode number from URL
+        match = re.search(r'episode-(\d+)', url)
+        if not match:
+            return False
+        
+        episode_num = match.group(1)
+        
+        # Check if both JSON and Markdown files exist
+        json_path = self.data_dir / 'json' / f'episode_{episode_num}.json'
+        md_path = self.data_dir / 'markdown' / f'episode_{episode_num}.md'
+        
+        if not (json_path.exists() and md_path.exists()):
+            return False
+        
+        # If audio transcription is enabled, also check if transcript is missing
+        if self.enable_audio_transcription:
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    episode_data = json.load(f)
+                    transcript = episode_data.get('full_transcript', '')
+                    # Consider episode incomplete if transcript is missing or very short
+                    if not transcript or len(transcript.strip()) < 100:
+                        return False
+            except (json.JSONDecodeError, FileNotFoundError, KeyError):
+                return False
+        
+        return True
     
     async def save_episode(self, episode_data: Dict[str, Any]):
         """Save episode data in multiple formats"""
@@ -540,7 +585,10 @@ class YonEarthPodcastScraper:
         
         # Save as CSV
         df = pd.DataFrame(summary_data)
-        df.sort_values('episode_number', inplace=True)
+        # Sort by episode number, handling mixed int/string types
+        df['sort_key'] = df['episode_number'].apply(lambda x: (0, x) if isinstance(x, int) else (1, str(x)))
+        df.sort_values('sort_key', inplace=True)
+        df.drop('sort_key', axis=1, inplace=True)
         df.to_csv(self.data_dir / 'csv' / 'episodes_summary.csv', index=False)
         
         # Save metadata
@@ -556,10 +604,32 @@ class YonEarthPodcastScraper:
 
 
 async def main():
-    scraper = YonEarthPodcastScraper()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='YonEarth Podcast Scraper')
+    parser.add_argument('--enable-audio-transcription', action='store_true',
+                       help='Enable audio transcription for episodes without transcripts')
+    parser.add_argument('--whisper-model', type=str, default='base',
+                       choices=['tiny', 'base', 'small', 'medium', 'large'],
+                       help='Whisper model size (default: base)')
+    parser.add_argument('--hf-token', type=str,
+                       help='Hugging Face token for pyannote models')
+    parser.add_argument('--skip-existing', action='store_true',
+                       help='Skip episodes that have already been scraped')
+    parser.add_argument('--limit', type=int,
+                       help='Limit number of episodes to process')
+    
+    args = parser.parse_args()
+    
+    scraper = YonEarthPodcastScraper(
+        enable_audio_transcription=args.enable_audio_transcription,
+        whisper_model=args.whisper_model,
+        hf_token=args.hf_token,
+        skip_existing=args.skip_existing
+    )
     
     # Scrape all episodes
-    await scraper.scrape_all_episodes()
+    await scraper.scrape_all_episodes(limit=args.limit)
 
 
 if __name__ == "__main__":

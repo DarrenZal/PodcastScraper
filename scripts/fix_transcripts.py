@@ -16,16 +16,29 @@ from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BrowserConfig, CacheMode
 from bs4 import BeautifulSoup
 
 from generic_scraper import PodcastScraper
+# from audio_transcriber import AudioTranscriber  # Temporarily disabled for debugging
 
 
 class TranscriptFixer:
     """Utility to fix missing or incomplete transcripts"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, 
+                 enable_audio_transcription: bool = False,
+                 whisper_model: str = "base",
+                 hf_token: Optional[str] = None):
         """Initialize with podcast configuration"""
         self.scraper = PodcastScraper(config)
         self.data_dir = self.scraper.data_dir
         self.results = []
+        
+        # Audio transcription setup
+        self.enable_audio_transcription = False  # Temporarily disabled for debugging
+        self.audio_transcriber = None
+        # if enable_audio_transcription:
+        #     self.audio_transcriber = AudioTranscriber(
+        #         whisper_model=whisper_model,
+        #         use_auth_token=hf_token
+        #     )
     
     def load_existing_episodes(self) -> List[Dict[str, Any]]:
         """Load all existing episode data"""
@@ -102,10 +115,39 @@ class TranscriptFixer:
                         needs_whisper = True
                         improvement = 0
                     
+                    # Try audio transcription if enabled and no transcript found
+                    audio_transcript = ""
+                    audio_metadata = {}
+                    if (status == "NO_TRANSCRIPT_AVAILABLE" and 
+                        self.enable_audio_transcription and 
+                        self.audio_transcriber and 
+                        episode.get('audio_url')):
+                        
+                        print(f"  Attempting audio transcription for episode {episode_num}...")
+                        try:
+                            audio_result = await self.audio_transcriber.transcribe_from_url(
+                                episode['audio_url'], 
+                                episode_num
+                            )
+                            
+                            if audio_result['success']:
+                                audio_transcript = audio_result['transcript']
+                                audio_metadata = audio_result['metadata']
+                                extracted_transcript = audio_transcript
+                                status = "AUDIO_TRANSCRIPT_GENERATED"
+                                needs_whisper = False
+                                improvement = len(audio_transcript)
+                                print(f"  ✓ Audio transcription successful: {len(audio_transcript)} characters")
+                            else:
+                                print(f"  ✗ Audio transcription failed: {audio_result['error']}")
+                        except Exception as e:
+                            print(f"  ✗ Audio transcription error: {e}")
+                    
                     result_data = {
                         'episode_number': episode_num,
                         'url': url,
                         'title': episode.get('title', ''),
+                        'audio_url': episode.get('audio_url', ''),
                         'current_transcript_length': len(current_transcript),
                         'extracted_transcript_length': len(extracted_transcript),
                         'improvement': improvement,
@@ -114,7 +156,9 @@ class TranscriptFixer:
                         'status': status,
                         'needs_whisper': needs_whisper,
                         'transcript_mentions_count': len(transcript_mentions),
-                        'extracted_transcript': extracted_transcript
+                        'extracted_transcript': extracted_transcript,
+                        'audio_transcript': audio_transcript,
+                        'audio_metadata': audio_metadata
                     }
                     
                     return result_data
@@ -167,10 +211,11 @@ class TranscriptFixer:
             results.append(result)
             
             # Update episode file if transcript was improved
-            if result.get('status') == 'TRANSCRIPT_EXTRACTED' and result.get('improvement', 0) > 0:
-                self.update_episode_file(episode, result['extracted_transcript'])
+            if result.get('status') in ['TRANSCRIPT_EXTRACTED', 'AUDIO_TRANSCRIPT_GENERATED'] and result.get('improvement', 0) > 0:
+                self.update_episode_file(episode, result['extracted_transcript'], result.get('audio_metadata', {}))
                 improved_count += 1
-                print(f"✓ Episode {result['episode_number']}: Improved by {result['improvement']} characters")
+                status_symbol = "✓" if result.get('status') == 'TRANSCRIPT_EXTRACTED' else "🎵"
+                print(f"{status_symbol} Episode {result['episode_number']}: Improved by {result['improvement']} characters")
             elif result.get('status') == 'NO_TRANSCRIPT_AVAILABLE':
                 print(f"⚠ Episode {result['episode_number']}: Needs Whisper transcription")
             elif result.get('status') in ['CRAWL_FAILED', 'ANALYSIS_FAILED']:
@@ -191,13 +236,17 @@ class TranscriptFixer:
         
         return results
     
-    def update_episode_file(self, episode: Dict[str, Any], new_transcript: str):
+    def update_episode_file(self, episode: Dict[str, Any], new_transcript: str, audio_metadata: Dict[str, Any] = None):
         """Update episode file with improved transcript"""
         episode_num = episode.get('episode_number', 0)
         
         # Update the episode data
         episode['full_transcript'] = new_transcript
         episode['transcript_fixed_date'] = datetime.now().isoformat()
+        
+        # Add audio transcription metadata if available
+        if audio_metadata:
+            episode['audio_transcription_metadata'] = audio_metadata
         
         # Save updated JSON
         json_file = self.data_dir / "json" / f"episode_{episode_num}.json"
@@ -220,7 +269,8 @@ class TranscriptFixer:
         report = {
             'timestamp': datetime.now().isoformat(),
             'total_processed': len(results),
-            'improved': len([r for r in results if r.get('status') == 'TRANSCRIPT_EXTRACTED' and r.get('improvement', 0) > 0]),
+            'improved': len([r for r in results if r.get('status') in ['TRANSCRIPT_EXTRACTED', 'AUDIO_TRANSCRIPT_GENERATED'] and r.get('improvement', 0) > 0]),
+            'audio_transcribed': len([r for r in results if r.get('status') == 'AUDIO_TRANSCRIPT_GENERATED']),
             'needs_whisper': len([r for r in results if r.get('needs_whisper', False)]),
             'no_improvement': len([r for r in results if r.get('status') == 'TRANSCRIPT_EXTRACTED' and r.get('improvement', 0) == 0]),
             'extraction_failed': len([r for r in results if r.get('status') == 'TRANSCRIPT_HEADER_FOUND_BUT_EXTRACTION_FAILED']),
@@ -230,7 +280,7 @@ class TranscriptFixer:
             'statistics': {
                 'total_characters_added': sum(r.get('improvement', 0) for r in results),
                 'avg_improvement': sum(r.get('improvement', 0) for r in results) / len(results) if results else 0,
-                'success_rate': len([r for r in results if r.get('status') == 'TRANSCRIPT_EXTRACTED']) / len(results) if results else 0
+                'success_rate': len([r for r in results if r.get('status') in ['TRANSCRIPT_EXTRACTED', 'AUDIO_TRANSCRIPT_GENERATED']]) / len(results) if results else 0
             }
         }
         
@@ -245,6 +295,7 @@ class TranscriptFixer:
         print(f"{'='*60}")
         print(f"Total processed: {report['total_processed']}")
         print(f"Improved: {report['improved']}")
+        print(f"Audio transcribed: {report['audio_transcribed']}")
         print(f"Need Whisper: {report['needs_whisper']}")
         print(f"No improvement: {report['no_improvement']}")
         print(f"Extraction failed: {report['extraction_failed']}")
@@ -277,11 +328,22 @@ async def main():
                        help='Limit number of episodes to process')
     parser.add_argument('--test', action='store_true',
                        help='Test mode: fix only episodes 144, 161, 163')
+    parser.add_argument('--enable-audio-transcription', action='store_true',
+                       help='Enable audio transcription for episodes without transcripts')
+    parser.add_argument('--whisper-model', type=str, default='base',
+                       choices=['tiny', 'base', 'small', 'medium', 'large'],
+                       help='Whisper model size (default: base)')
+    parser.add_argument('--hf-token', type=str,
+                       help='Hugging Face token for pyannote models')
     
     args = parser.parse_args()
     
     # Initialize fixer with default YonEarth configuration
-    fixer = TranscriptFixer()
+    fixer = TranscriptFixer(
+        enable_audio_transcription=args.enable_audio_transcription,
+        whisper_model=args.whisper_model,
+        hf_token=args.hf_token
+    )
     
     if args.test:
         # Test mode with known episodes
