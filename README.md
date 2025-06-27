@@ -96,7 +96,22 @@ For episodes without existing transcripts, the scraper can generate them using W
 - `--hf-token` - Hugging Face token for better speaker diarization (required for audio transcription)
 - `--limit N` - Process only the first N episodes (useful for testing)
 
-### 5. Fix Missing Transcripts
+### 5. Transcribe Individual Episodes
+
+For episodes with external audio or special cases:
+
+```bash
+# Transcribe a single episode with external audio URL
+python scripts/transcribe_single_episode.py data/json/episode_greendreamer.json \
+  --audio-url "https://example.com/audio.mp3" \
+  --whisper-model medium \
+  --hf-token YOUR_TOKEN
+
+# Transcribe using audio URL already in JSON
+python scripts/transcribe_single_episode.py data/json/episode_123.json
+```
+
+### 6. Fix Missing Transcripts
 
 ```bash
 # Basic transcript fixing
