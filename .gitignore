@@ -36,11 +36,11 @@ venv.bak/
 *~
 
 # Data files (adjust based on what you want to commit)
-data/json/
-data/markdown/
+# data/json/  # Commented out - we want to commit JSON episode data
+# data/markdown/  # Commented out - we want to commit markdown files
 data/csv/
 data/fixed_transcripts/
-data/*.json
+# data/*.json  # Commented out - we want to commit JSON metadata
 *.log
 
 # Playwright
